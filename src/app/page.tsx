@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import Image from "next/image";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -26,6 +28,16 @@ type Repo = {
 };
 
 type RepoDetail = Repo & { readme?: string };
+
+type AiInterpretation = {
+  keywords: string;
+  language: string | null;
+  license: string | null;
+  topics: string[];
+  min_stars: number | null;
+  max_age_days: number | null;
+  reasoning: string;
+};
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -81,6 +93,14 @@ const LANG_COLORS: Record<string, string> = {
   Kotlin: "#A97BFF",
   HTML: "#e34c26",
 };
+
+const AI_EXAMPLES = [
+  "lightweight react animation library, MIT licensed, actively maintained",
+  "modern python web framework with async support",
+  "rust cli tool for fuzzy file search",
+  "vue 3 component library with dark mode and tailwind",
+  "open source alternative to Notion",
+];
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -199,6 +219,54 @@ function BookmarkIcon({ filled, className }: { filled?: boolean; className?: str
   );
 }
 
+function SparkleIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} fill="currentColor" viewBox="0 0 24 24">
+      <path d="M12 0l2.5 7.5L22 10l-7.5 2.5L12 20l-2.5-7.5L2 10l7.5-2.5L12 0z" />
+    </svg>
+  );
+}
+
+// ── Markdown components for README rendering ───────────────────────────────
+
+const MD_COMPONENTS = {
+  h1: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h1 className="text-base font-semibold text-white mt-3 mb-2" {...props} />
+  ),
+  h2: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h2 className="text-sm font-semibold text-white mt-3 mb-1.5" {...props} />
+  ),
+  h3: (props: React.HTMLAttributes<HTMLHeadingElement>) => (
+    <h3 className="text-sm font-semibold text-gray-200 mt-2 mb-1" {...props} />
+  ),
+  p: (props: React.HTMLAttributes<HTMLParagraphElement>) => (
+    <p className="text-sm text-gray-300 leading-relaxed mb-2" {...props} />
+  ),
+  a: (props: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
+    <a className="text-indigo-400 hover:text-indigo-300 underline" target="_blank" rel="noopener noreferrer" {...props} />
+  ),
+  code: (props: React.HTMLAttributes<HTMLElement>) => (
+    <code className="text-xs bg-gray-700/70 px-1.5 py-0.5 rounded text-pink-300 font-mono" {...props} />
+  ),
+  pre: (props: React.HTMLAttributes<HTMLPreElement>) => (
+    <pre className="bg-gray-950/60 border border-gray-700 p-3 rounded-lg text-xs overflow-x-auto my-2 text-gray-200" {...props} />
+  ),
+  ul: (props: React.HTMLAttributes<HTMLUListElement>) => (
+    <ul className="list-disc list-inside text-sm text-gray-300 mb-2 ml-1 space-y-0.5" {...props} />
+  ),
+  ol: (props: React.OlHTMLAttributes<HTMLOListElement>) => (
+    <ol className="list-decimal list-inside text-sm text-gray-300 mb-2 ml-1 space-y-0.5" {...props} />
+  ),
+  blockquote: (props: React.BlockquoteHTMLAttributes<HTMLQuoteElement>) => (
+    <blockquote className="border-l-2 border-gray-600 pl-3 text-sm text-gray-400 italic my-2" {...props} />
+  ),
+  hr: () => <hr className="border-gray-700 my-3" />,
+  strong: (props: React.HTMLAttributes<HTMLElement>) => (
+    <strong className="font-semibold text-white" {...props} />
+  ),
+  img: () => null, // strip images entirely
+};
+
 // ── Summary Modal ──────────────────────────────────────────────────────────
 
 function SummaryModal({
@@ -212,14 +280,28 @@ function SummaryModal({
 }) {
   const [detail, setDetail] = useState<RepoDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     const [owner, repo] = fullName.split("/");
     fetch(`/api/summary?owner=${owner}&repo=${repo}`)
-      .then((r) => r.json())
-      .then(setDetail)
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+      .then(({ ok, data }) => {
+        if (!ok) setError(data.error || "Failed to load");
+        else setDetail(data);
+      })
+      .catch(() => setError("Network error"))
       .finally(() => setLoading(false));
   }, [fullName]);
+
+  // Close on Esc
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [onClose]);
 
   const techStack = detail ? detectTechStack(detail) : [];
 
@@ -233,12 +315,10 @@ function SummaryModal({
         onClick={(e) => e.stopPropagation()}
       >
         {loading ? (
-          <div className="p-10 text-center text-gray-500 text-sm">
-            Loading summary...
-          </div>
-        ) : !detail ? (
-          <div className="p-10 text-center text-gray-500 text-sm">Failed to load.</div>
-        ) : (
+          <div className="p-10 text-center text-gray-500 text-sm">Loading summary...</div>
+        ) : error ? (
+          <div className="p-10 text-center text-red-400 text-sm">{error}</div>
+        ) : !detail ? null : (
           <div className="p-6 flex flex-col gap-5">
             {/* Header */}
             <div className="flex items-start justify-between gap-4">
@@ -260,6 +340,7 @@ function SummaryModal({
               <button
                 onClick={onClose}
                 className="text-gray-500 hover:text-gray-200 transition-colors"
+                aria-label="Close"
               >
                 <CloseIcon className="w-5 h-5" />
               </button>
@@ -337,16 +418,20 @@ function SummaryModal({
               </div>
             )}
 
-            {/* README preview */}
+            {/* README preview with markdown */}
             {detail.readme && (
-              <div className="bg-gray-800/60 rounded-xl p-4 border border-gray-700/50">
+              <div className="bg-gray-800/40 rounded-xl p-4 border border-gray-700/50">
                 <div className="text-xs text-gray-500 uppercase tracking-wider mb-2 font-medium">
                   README
                 </div>
-                <p className="text-gray-300 text-sm leading-relaxed whitespace-pre-wrap">
-                  {detail.readme}
-                  {detail.readme.length >= 700 ? "..." : ""}
-                </p>
+                <div className="prose-sm">
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={MD_COMPONENTS}>
+                    {detail.readme}
+                  </ReactMarkdown>
+                </div>
+                {detail.readme.length >= 4000 && (
+                  <div className="text-xs text-gray-600 mt-2">README truncated…</div>
+                )}
               </div>
             )}
 
@@ -362,10 +447,7 @@ function SummaryModal({
               </a>
               {detail.topics && detail.topics.length > 0 && (
                 <button
-                  onClick={() => {
-                    const q = detail.topics.slice(0, 3).join(" ");
-                    onFindSimilar(q);
-                  }}
+                  onClick={() => onFindSimilar(detail.topics.slice(0, 3).join(" "))}
                   className="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-sm font-medium py-2.5 px-4 rounded-xl transition-colors"
                 >
                   Find Similar
@@ -404,19 +486,32 @@ function RepoCard({
   onSave,
   isTrending,
   isSaved,
+  aiReason,
 }: {
   repo: Repo;
   onSummary: () => void;
   onSave: () => void;
   isTrending?: boolean;
   isSaved?: boolean;
+  aiReason?: string;
 }) {
   const cat = detectCategory(repo);
   const techStack = detectTechStack(repo);
   const langColor = LANG_COLORS[repo.language || ""] || "#6b7280";
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3 hover:border-gray-600 transition-colors">
+    <div
+      onClick={onSummary}
+      className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3 hover:border-gray-600 hover:bg-gray-900/80 transition-colors cursor-pointer"
+    >
+      {/* AI reasoning chip (only on smart-search results) */}
+      {aiReason && (
+        <div className="flex items-start gap-2 bg-violet-950/40 border border-violet-900/50 rounded-lg p-2 -mt-1 -mx-1">
+          <SparkleIcon className="w-3.5 h-3.5 text-violet-400 flex-shrink-0 mt-0.5" />
+          <span className="text-xs text-violet-200 leading-snug">{aiReason}</span>
+        </div>
+      )}
+
       {/* Top row */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -431,6 +526,7 @@ function RepoCard({
             href={repo.html_url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={(e) => e.stopPropagation()}
             className="text-indigo-400 hover:text-indigo-300 text-sm font-medium truncate transition-colors"
           >
             {repo.full_name}
@@ -498,12 +594,7 @@ function RepoCard({
             </span>
           )}
         </div>
-        <button
-          onClick={onSummary}
-          className="text-xs bg-gray-800 hover:bg-indigo-600 border border-gray-700 hover:border-indigo-500 px-3 py-1.5 rounded-lg transition-colors font-medium text-gray-200 hover:text-white"
-        >
-          Summary
-        </button>
+        <span className="text-xs text-gray-500 group-hover:text-indigo-400 transition-colors">Click for summary →</span>
       </div>
 
       {/* Footer */}
@@ -524,9 +615,40 @@ function RepoCard({
   );
 }
 
+// ── Smart Search interpretation chips ──────────────────────────────────────
+
+function InterpretationDisplay({ interp }: { interp: AiInterpretation }) {
+  const chips: { label: string; color: string }[] = [];
+  if (interp.keywords) chips.push({ label: `"${interp.keywords}"`, color: "bg-gray-800 text-gray-200" });
+  if (interp.language) chips.push({ label: interp.language, color: "bg-blue-950 text-blue-300" });
+  if (interp.license) chips.push({ label: interp.license.toUpperCase(), color: "bg-green-950 text-green-400" });
+  for (const t of interp.topics || []) chips.push({ label: t, color: "bg-indigo-950 text-indigo-300" });
+  if (interp.min_stars) chips.push({ label: `>${interp.min_stars} stars`, color: "bg-orange-950 text-orange-400" });
+  if (interp.max_age_days) chips.push({ label: `pushed <${interp.max_age_days}d`, color: "bg-amber-950 text-amber-400" });
+
+  return (
+    <div className="bg-violet-950/30 border border-violet-900/40 rounded-xl p-4 space-y-2">
+      <div className="flex items-center gap-2">
+        <SparkleIcon className="w-4 h-4 text-violet-400" />
+        <span className="text-sm font-medium text-violet-200">AI understood your query as</span>
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {chips.map((c, i) => (
+          <span key={i} className={`text-xs px-2.5 py-1 rounded-full font-medium ${c.color}`}>
+            {c.label}
+          </span>
+        ))}
+      </div>
+      {interp.reasoning && (
+        <p className="text-xs text-violet-300/80 italic leading-relaxed">{interp.reasoning}</p>
+      )}
+    </div>
+  );
+}
+
 // ── Main Page ──────────────────────────────────────────────────────────────
 
-type Tab = "discover" | "trending" | "saved";
+type Tab = "discover" | "trending" | "saved" | "ai";
 
 export default function Home() {
   const [tab, setTab] = useState<Tab>("discover");
@@ -538,8 +660,21 @@ export default function Home() {
   const [sort, setSort] = useState("stars");
   const [repos, setRepos] = useState<Repo[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [summaryTarget, setSummaryTarget] = useState<string | null>(null);
   const [saved, setSaved] = useState<Repo[]>([]);
+
+  // Smart Search state
+  const [aiInputValue, setAiInputValue] = useState("");
+  const [aiQuery, setAiQuery] = useState("");
+  const [aiResults, setAiResults] = useState<Repo[]>([]);
+  const [aiInterpretation, setAiInterpretation] = useState<AiInterpretation | null>(null);
+  const [aiReasoning, setAiReasoning] = useState<Record<number, string>>({});
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const aiInputRef = useRef<HTMLTextAreaElement>(null);
 
   // Load saved from localStorage after mount (avoids SSR mismatch)
   useEffect(() => {
@@ -559,18 +694,26 @@ export default function Home() {
   }, []);
 
   const fetchRepos = useCallback(async () => {
-    if (tab === "saved") return;
+    if (tab === "saved" || tab === "ai") return;
     setLoading(true);
+    setError(null);
     try {
       const params = new URLSearchParams({ q: query });
-      // velocity sort = fetch by stars, re-sort client-side
       params.set("sort", sort === "velocity" ? "stars" : sort);
       if (license) params.set("license", license);
       if (language) params.set("language", language);
       const endpoint = tab === "trending" ? "/api/trending" : "/api/repos";
       const res = await fetch(`${endpoint}?${params}`);
       const data = await res.json();
-      setRepos(data.items || []);
+      if (!res.ok || data.message) {
+        setError(data.message || data.error || `Request failed (${res.status})`);
+        setRepos([]);
+      } else {
+        setRepos(data.items || []);
+      }
+    } catch {
+      setError("Network error. Check your connection.");
+      setRepos([]);
     } finally {
       setLoading(false);
     }
@@ -582,6 +725,35 @@ export default function Home() {
 
   const handleSearch = () => setQuery(inputValue);
 
+  const runSmartSearch = useCallback(async (q: string) => {
+    if (!q.trim()) return;
+    setAiLoading(true);
+    setAiError(null);
+    setAiQuery(q);
+    try {
+      const res = await fetch("/api/agent-search", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query: q }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setAiError(data.error || `Request failed (${res.status})`);
+        setAiResults([]);
+        setAiInterpretation(null);
+      } else {
+        setAiResults(data.items || []);
+        setAiInterpretation(data.interpretation || null);
+        setAiReasoning(data.reasoning || {});
+      }
+    } catch {
+      setAiError("Network error. Check your connection.");
+      setAiResults([]);
+    } finally {
+      setAiLoading(false);
+    }
+  }, []);
+
   // Find Similar: switch to discover, set query, close modal
   const findSimilar = useCallback((similarQuery: string) => {
     setInputValue(similarQuery);
@@ -590,23 +762,43 @@ export default function Home() {
     setSummaryTarget(null);
   }, []);
 
+  // Keyboard shortcuts: "/" to focus search, ignored when typing in inputs
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key !== "/") return;
+      const target = e.target as HTMLElement;
+      const tag = target.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      e.preventDefault();
+      if (tab === "ai") aiInputRef.current?.focus();
+      else searchInputRef.current?.focus();
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [tab]);
+
   // Apply client-side category filter + velocity sort
   const displayRepos = useMemo(() => {
-    const source = tab === "saved" ? saved : repos;
+    let source: Repo[];
+    if (tab === "saved") source = saved;
+    else if (tab === "ai") source = aiResults;
+    else source = repos;
     let result = category
       ? source.filter((r) => detectCategory(r) === category)
       : [...source];
-    if (sort === "velocity") {
+    if (sort === "velocity" && tab !== "saved" && tab !== "ai") {
       result.sort((a, b) => velocityOf(b) - velocityOf(a));
     }
     return result;
-  }, [tab, repos, saved, category, sort]);
+  }, [tab, repos, saved, aiResults, category, sort]);
 
   const hasFilters = license || language || category;
+  const showSearchHeader = tab !== "ai";
 
   const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
     { id: "discover", label: "Discover", icon: <GithubIcon className="w-4 h-4" /> },
     { id: "trending", label: "Trending Now", icon: <FireIcon className="w-4 h-4" /> },
+    { id: "ai", label: "Smart Search", icon: <SparkleIcon className="w-4 h-4" /> },
     {
       id: "saved",
       label: saved.length > 0 ? `Saved (${saved.length})` : "Saved",
@@ -622,122 +814,212 @@ export default function Home() {
           <GithubIcon className="w-6 h-6 text-indigo-400" />
           <span className="font-semibold text-base">RepoFinder</span>
         </div>
-        <div className="flex-1 flex gap-2 max-w-xl">
-          <input
-            type="text"
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-            placeholder="Search GitHub repos..."
-            className="flex-1 bg-gray-800 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition-colors"
-          />
-          <button
-            onClick={handleSearch}
-            className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex-shrink-0"
-          >
-            Search
-          </button>
-        </div>
+        {showSearchHeader && (
+          <div className="flex-1 flex gap-2 max-w-xl">
+            <div className="flex-1 relative">
+              <input
+                ref={searchInputRef}
+                type="text"
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                placeholder="Search GitHub repos... (press / to focus)"
+                className="w-full bg-gray-800 rounded-lg px-4 py-2 text-sm outline-none border border-gray-700 focus:border-indigo-500 transition-colors"
+              />
+            </div>
+            <button
+              onClick={handleSearch}
+              className="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded-lg text-sm font-medium transition-colors flex-shrink-0"
+            >
+              Search
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Tabs */}
       <div className="border-b border-gray-800 px-6">
-        <div className="flex">
-          {tabs.map(({ id, label, icon }) => (
-            <button
-              key={id}
-              onClick={() => setTab(id)}
-              className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors ${
-                tab === id
-                  ? id === "trending"
-                    ? "border-orange-500 text-orange-400"
-                    : id === "saved"
-                    ? "border-amber-500 text-amber-400"
-                    : "border-indigo-500 text-indigo-400"
-                  : "border-transparent text-gray-400 hover:text-gray-200"
-              }`}
-            >
-              {icon}
-              {label}
-            </button>
-          ))}
+        <div className="flex overflow-x-auto">
+          {tabs.map(({ id, label, icon }) => {
+            const activeColor =
+              id === "trending" ? "border-orange-500 text-orange-400"
+              : id === "saved" ? "border-amber-500 text-amber-400"
+              : id === "ai" ? "border-violet-500 text-violet-400"
+              : "border-indigo-500 text-indigo-400";
+            return (
+              <button
+                key={id}
+                onClick={() => setTab(id)}
+                className={`flex items-center gap-2 px-5 py-3 text-sm font-medium border-b-2 transition-colors whitespace-nowrap ${
+                  tab === id ? activeColor : "border-transparent text-gray-400 hover:text-gray-200"
+                }`}
+              >
+                {icon}
+                {label}
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Filters */}
-      <div className="px-6 py-3 flex items-center gap-3 flex-wrap border-b border-gray-800 bg-gray-900/40">
-        <select
-          value={license}
-          onChange={(e) => setLicense(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
-        >
-          <option value="">Any License</option>
-          <option value="mit">MIT</option>
-          <option value="apache-2.0">Apache 2.0</option>
-          <option value="gpl-3.0">GPL 3.0</option>
-          <option value="bsd-2-clause">BSD 2-Clause</option>
-        </select>
+      {/* AI Search input panel */}
+      {tab === "ai" && (
+        <div className="border-b border-gray-800 bg-violet-950/10 px-6 py-6">
+          <div className="max-w-3xl mx-auto space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-white mb-1 flex items-center gap-2">
+                <SparkleIcon className="w-5 h-5 text-violet-400" />
+                Smart Search
+              </h2>
+              <p className="text-sm text-gray-400">
+                Describe what you&apos;re looking for in plain English. Claude figures out the filters and ranks the results.
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <textarea
+                ref={aiInputRef}
+                value={aiInputValue}
+                onChange={(e) => setAiInputValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    runSmartSearch(aiInputValue);
+                  }
+                }}
+                placeholder="e.g. lightweight react animation library, MIT licensed, actively maintained"
+                rows={2}
+                className="flex-1 bg-gray-800 rounded-lg px-4 py-3 text-sm outline-none border border-gray-700 focus:border-violet-500 transition-colors resize-none"
+              />
+              <button
+                onClick={() => runSmartSearch(aiInputValue)}
+                disabled={aiLoading || !aiInputValue.trim()}
+                className="bg-violet-600 hover:bg-violet-500 disabled:bg-gray-800 disabled:text-gray-600 disabled:cursor-not-allowed text-white px-5 py-3 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+              >
+                {aiLoading ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Thinking...
+                  </>
+                ) : (
+                  <>
+                    <SparkleIcon className="w-4 h-4" />
+                    Ask AI
+                  </>
+                )}
+              </button>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              <span className="text-xs text-gray-500 mr-1">Try:</span>
+              {AI_EXAMPLES.map((ex) => (
+                <button
+                  key={ex}
+                  onClick={() => { setAiInputValue(ex); runSmartSearch(ex); }}
+                  className="text-xs bg-gray-800/60 hover:bg-violet-900/50 text-gray-400 hover:text-violet-200 px-2.5 py-1 rounded-full border border-gray-700/50 hover:border-violet-700 transition-colors"
+                >
+                  {ex}
+                </button>
+              ))}
+            </div>
+            {aiInterpretation && !aiLoading && <InterpretationDisplay interp={aiInterpretation} />}
+            {aiError && (
+              <div className="bg-red-950/40 border border-red-900/50 rounded-lg p-3 text-sm text-red-300">
+                {aiError}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
-        <select
-          value={language}
-          onChange={(e) => setLanguage(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
-        >
-          <option value="">Any Language</option>
-          {LANGUAGES.map((l) => (
-            <option key={l} value={l}>{l}</option>
-          ))}
-        </select>
-
-        <select
-          value={category}
-          onChange={(e) => setCategory(e.target.value)}
-          className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
-        >
-          <option value="">All Types</option>
-          {Object.keys(CATEGORIES).map((c) => (
-            <option key={c} value={c}>{c}</option>
-          ))}
-        </select>
-
-        {tab !== "saved" && (
+      {/* Filters (hidden on AI tab) */}
+      {tab !== "ai" && (
+        <div className="px-6 py-3 flex items-center gap-3 flex-wrap border-b border-gray-800 bg-gray-900/40">
           <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
+            value={license}
+            onChange={(e) => setLicense(e.target.value)}
             className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
           >
-            <option value="stars">Most Stars</option>
-            <option value="velocity">Stars / Day</option>
-            <option value="forks">Most Forks</option>
-            <option value="updated">Recently Updated</option>
-            <option value="help-wanted-issues">Help Wanted</option>
+            <option value="">Any License</option>
+            <option value="mit">MIT</option>
+            <option value="apache-2.0">Apache 2.0</option>
+            <option value="gpl-3.0">GPL 3.0</option>
+            <option value="bsd-2-clause">BSD 2-Clause</option>
           </select>
-        )}
 
-        {hasFilters && (
-          <button
-            onClick={() => { setLicense(""); setLanguage(""); setCategory(""); }}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
           >
-            Clear filters
-          </button>
-        )}
+            <option value="">Any Language</option>
+            {LANGUAGES.map((l) => (
+              <option key={l} value={l}>{l}</option>
+            ))}
+          </select>
 
-        <span className="ml-auto text-xs text-gray-600">
-          {displayRepos.length > 0 && `${displayRepos.length} repos`}
-        </span>
-      </div>
+          <select
+            value={category}
+            onChange={(e) => setCategory(e.target.value)}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
+          >
+            <option value="">All Types</option>
+            {Object.keys(CATEGORIES).map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+
+          {tab !== "saved" && (
+            <select
+              value={sort}
+              onChange={(e) => setSort(e.target.value)}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm text-gray-200 outline-none cursor-pointer"
+            >
+              <option value="stars">Most Stars</option>
+              <option value="velocity">Stars / Day</option>
+              <option value="forks">Most Forks</option>
+              <option value="updated">Recently Updated</option>
+              <option value="help-wanted-issues">Help Wanted</option>
+            </select>
+          )}
+
+          {hasFilters && (
+            <button
+              onClick={() => { setLicense(""); setLanguage(""); setCategory(""); }}
+              className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              Clear filters
+            </button>
+          )}
+
+          <span className="ml-auto text-xs text-gray-600">
+            {displayRepos.length > 0 && `${displayRepos.length} repos`}
+          </span>
+        </div>
+      )}
 
       {/* Grid */}
       <main className="p-6">
-        {loading ? (
+        {(loading || (tab === "ai" && aiLoading)) ? (
           <div className="flex flex-col items-center justify-center h-64 gap-3 text-gray-600">
-            <div className="w-6 h-6 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-            <span className="text-sm">Fetching repos...</span>
+            <div className={`w-6 h-6 border-2 ${tab === "ai" ? "border-violet-500" : "border-indigo-500"} border-t-transparent rounded-full animate-spin`} />
+            <span className="text-sm">{tab === "ai" ? "AI is searching..." : "Fetching repos..."}</span>
+          </div>
+        ) : error && tab !== "ai" ? (
+          <div className="max-w-md mx-auto bg-red-950/40 border border-red-900/50 rounded-xl p-4 text-sm text-red-300">
+            <div className="font-medium mb-1">Couldn&apos;t load repos</div>
+            <div className="text-red-400/80">{error}</div>
+            {error.toLowerCase().includes("rate limit") && (
+              <div className="text-xs text-red-400/60 mt-2">
+                Tip: add a <code className="bg-red-950 px-1 py-0.5 rounded">GITHUB_TOKEN</code> env var in Vercel to get 5000 req/hour.
+              </div>
+            )}
           </div>
         ) : tab === "saved" && saved.length === 0 ? (
           <div className="text-center text-gray-600 py-20 text-sm">
             No saved repos yet. Hit the bookmark icon on any card.
+          </div>
+        ) : tab === "ai" && !aiQuery ? (
+          <div className="text-center text-gray-600 py-20 text-sm max-w-md mx-auto">
+            Enter a query above. Smart Search uses Claude to interpret what you mean and rank the best matches.
           </div>
         ) : displayRepos.length === 0 ? (
           <div className="text-center text-gray-600 py-20 text-sm">
@@ -751,6 +1033,7 @@ export default function Home() {
                 repo={repo}
                 isTrending={tab === "trending"}
                 isSaved={savedIds.has(repo.id)}
+                aiReason={tab === "ai" ? aiReasoning[repo.id] : undefined}
                 onSave={() => toggleSave(repo)}
                 onSummary={() => setSummaryTarget(repo.full_name)}
               />

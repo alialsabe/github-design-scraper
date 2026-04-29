@@ -2,15 +2,21 @@ import { NextRequest, NextResponse } from "next/server";
 
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
 
-function stripMarkdown(text: string): string {
+function cleanReadme(text: string): string {
   return text
-    .replace(/!\[.*?\]\(.*?\)/g, "")
-    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/`[^`]+`/g, "")
-    .replace(/#{1,6}\s+/g, "")
-    .replace(/[*_~]/g, "")
-    .replace(/\n{3,}/g, "\n\n")
+    // Strip HTML img tags (often huge banner images)
+    .replace(/<img[^>]*\/?>/gi, "")
+    // Strip <p align="center"> wrappers and other HTML
+    .replace(/<\/?(?:p|div|center|br|hr|table|tr|td|th|thead|tbody|a)[^>]*>/gi, "")
+    // Strip badge images from common badge services
+    .replace(
+      /!\[[^\]]*\]\(https?:\/\/(?:img\.shields\.io|badgen\.net|badge\.fury\.io|travis-ci\.[a-z]+|circleci\.com|github\.com\/[^/]+\/[^/]+\/(?:workflows|actions))[^)]*\)/gi,
+      ""
+    )
+    // Strip standalone HTML comments
+    .replace(/<!--[\s\S]*?-->/g, "")
+    // Collapse 4+ newlines into 2
+    .replace(/\n{4,}/g, "\n\n")
     .trim();
 }
 
@@ -36,6 +42,12 @@ export async function GET(req: NextRequest) {
   ]);
 
   if (repoRes.status === "rejected" || !repoRes.value.ok) {
+    if (repoRes.status === "fulfilled" && repoRes.value.status === 403) {
+      return NextResponse.json(
+        { error: "GitHub rate limit reached. Add a GITHUB_TOKEN." },
+        { status: 429 }
+      );
+    }
     return NextResponse.json({ error: "Repo not found" }, { status: 404 });
   }
 
@@ -44,7 +56,7 @@ export async function GET(req: NextRequest) {
   let readme = "";
   if (readmeRes.status === "fulfilled" && readmeRes.value.ok) {
     const raw = await readmeRes.value.text();
-    readme = stripMarkdown(raw).slice(0, 700);
+    readme = cleanReadme(raw).slice(0, 4000);
   }
 
   return NextResponse.json({ ...repoData, readme });
