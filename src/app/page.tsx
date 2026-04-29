@@ -872,7 +872,7 @@ export default function Home() {
                 Smart Search
               </h2>
               <p className="text-sm text-gray-400">
-                Describe what you&apos;re looking for in plain English. Claude figures out the filters and ranks the results.
+                Describe what you&apos;re looking for in plain English. Grok 4 Fast figures out the filters and ranks the results.
               </p>
             </div>
             <div className="flex gap-2">
@@ -1019,7 +1019,7 @@ export default function Home() {
           </div>
         ) : tab === "ai" && !aiQuery ? (
           <div className="text-center text-gray-600 py-20 text-sm max-w-md mx-auto">
-            Enter a query above. Smart Search uses Claude to interpret what you mean and rank the best matches.
+            Enter a query above. Smart Search uses Grok 4 Fast to interpret what you mean and rank the best matches.
           </div>
         ) : displayRepos.length === 0 ? (
           <div className="text-center text-gray-600 py-20 text-sm">

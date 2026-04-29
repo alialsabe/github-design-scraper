@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY;
 const GITHUB_TOKEN = process.env.GITHUB_TOKEN;
+const MODEL = "x-ai/grok-4-fast";
 
 const PARSE_SYSTEM = `You parse natural-language GitHub repo searches into structured query parameters.
 
-Output ONLY valid JSON, no other text. Schema:
+Output ONLY a single valid JSON object with this exact shape, no other text, no markdown fences:
 {
-  "keywords": "string (core search terms — keep it short, 1-4 words)",
+  "keywords": "string (core search terms, 1-4 words)",
   "language": "string|null (e.g. TypeScript, Python, Rust, Go, JavaScript, CSS)",
   "license": "string|null (mit, apache-2.0, gpl-3.0, bsd-2-clause)",
   "topics": ["string"] (specific GitHub topic tags, lowercase, hyphen-separated),
@@ -17,30 +18,30 @@ Output ONLY valid JSON, no other text. Schema:
 }
 
 Heuristics:
-- "actively maintained" → max_age_days: 90
-- "popular" → min_stars: 1000
-- "well-known" or "battle-tested" → min_stars: 5000
-- "new" or "recent" or "trending" → max_age_days: 180
-- Be conservative — only set filters that are explicit or strongly implied. When in doubt, leave null.
+- "actively maintained" -> max_age_days: 90
+- "popular" -> min_stars: 1000
+- "well-known" or "battle-tested" -> min_stars: 5000
+- "new" or "recent" or "trending" -> max_age_days: 180
+- Be conservative. Only set filters that are explicit or strongly implied. When in doubt, use null.
 - Keywords should be the essential noun phrase (e.g. "animation library", "form validation").`;
 
 const RANK_SYSTEM = `You rank GitHub repos by how well they match a user's intent.
 
-Output ONLY valid JSON:
+Output ONLY a single valid JSON object, no other text, no markdown fences:
 {
   "ranked": [
-    { "i": <index>, "why": "<one short line: why this is a great match>" }
+    { "i": <integer index from the input list>, "why": "<one short specific line>" }
   ]
 }
 
 Rules:
 - Up to 12 results, sorted best-match first.
-- Skip repos that are clearly off-topic — quality over quantity.
-- Look beyond keyword matching: consider stars, recency, language, license, and topic alignment.
-- "lightweight" → prefer smaller, simpler repos.
-- "production-ready" → prefer popular, well-maintained.
-- "modern" → prefer recent, TypeScript, current frameworks.
-- The "why" line should be specific (e.g. "5.2k stars, MIT, last push 2 weeks ago, headless React"), not generic.`;
+- Skip repos that are clearly off-topic. Quality over quantity.
+- Look beyond keywords: stars, recency, language, license, topic alignment.
+- "lightweight" -> prefer smaller, simpler repos.
+- "production-ready" -> prefer popular, well-maintained.
+- "modern" -> prefer recent, TypeScript, current frameworks.
+- The "why" line must be specific (e.g. "5.2k stars, MIT, last push 2 weeks ago, headless React").`;
 
 type ParsedQuery = {
   keywords: string;
@@ -59,12 +60,50 @@ function extractJson(text: string): string {
     .trim();
 }
 
+async function callGrok(
+  system: string,
+  user: string,
+  maxTokens: number
+): Promise<string> {
+  const res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
+      "Content-Type": "application/json",
+      "HTTP-Referer": "https://github-design-scraper.vercel.app",
+      "X-Title": "RepoFinder Smart Search",
+    },
+    body: JSON.stringify({
+      model: MODEL,
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      max_tokens: maxTokens,
+      temperature: 0,
+      response_format: { type: "json_object" },
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`OpenRouter ${res.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = await res.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (typeof text !== "string") {
+    throw new Error("OpenRouter returned no text content");
+  }
+  return text;
+}
+
 export async function POST(req: NextRequest) {
-  if (!process.env.ANTHROPIC_API_KEY) {
+  if (!OPENROUTER_API_KEY) {
     return NextResponse.json(
       {
         error:
-          "ANTHROPIC_API_KEY is not set. Add it in Vercel project settings → Environment Variables and redeploy to enable Smart Search.",
+          "OPENROUTER_API_KEY is not set. Add it in Vercel project settings -> Environment Variables and redeploy to enable Smart Search.",
       },
       { status: 503 }
     );
@@ -82,36 +121,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Query is required" }, { status: 400 });
   }
 
-  const client = new Anthropic();
-
   // ── Step 1: parse natural language → structured search params ────────────
   let parsed: ParsedQuery;
   try {
-    const parseResp = await client.messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 400,
-      system: [
-        {
-          type: "text",
-          text: PARSE_SYSTEM,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [{ role: "user", content: query }],
-    });
-
-    const block = parseResp.content.find((b) => b.type === "text");
-    const text = block && "text" in block ? block.text : "{}";
+    const text = await callGrok(PARSE_SYSTEM, query, 400);
     parsed = JSON.parse(extractJson(text));
   } catch (e) {
-    if (e instanceof Anthropic.AuthenticationError) {
+    const msg = e instanceof Error ? e.message : "Unknown error";
+    if (msg.includes("401") || msg.includes("403")) {
       return NextResponse.json(
-        { error: "ANTHROPIC_API_KEY is invalid" },
+        { error: "OPENROUTER_API_KEY is invalid or unauthorized" },
         { status: 503 }
       );
     }
     return NextResponse.json(
-      { error: "Failed to parse query with AI" },
+      { error: `Failed to parse query: ${msg}` },
       { status: 500 }
     );
   }
@@ -146,7 +170,8 @@ export async function POST(req: NextRequest) {
     if (ghRes.status === 403) {
       return NextResponse.json(
         {
-          error: "GitHub rate limit reached. Add a GITHUB_TOKEN env var for 5000 req/hour.",
+          error:
+            "GitHub rate limit reached. Add a GITHUB_TOKEN env var for 5000 req/hour.",
         },
         { status: 429 }
       );
@@ -169,7 +194,7 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  // ── Step 4: rank with AI ──────────────────────────────────────────────────
+  // ── Step 4: rank with Grok ───────────────────────────────────────────────
   let rankedItems = items;
   const reasoning: Record<number, string> = {};
 
@@ -177,33 +202,19 @@ export async function POST(req: NextRequest) {
     const repoSummary = items
       .slice(0, 30)
       .map((r, i) => {
-        const license = (r.license as { spdx_id?: string } | null)?.spdx_id || "no license";
+        const license =
+          (r.license as { spdx_id?: string } | null)?.spdx_id || "no license";
         const topics = ((r.topics as string[]) || []).slice(0, 6).join(", ");
         const desc = ((r.description as string) || "").slice(0, 140);
         return `${i}. ${r.full_name} (★${r.stargazers_count}, ${r.language || "?"}, ${license}) — ${desc} [${topics}]`;
       })
       .join("\n");
 
-    const rankResp = await client.messages.create({
-      model: "claude-haiku-4-5",
-      max_tokens: 1500,
-      system: [
-        {
-          type: "text",
-          text: RANK_SYSTEM,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      messages: [
-        {
-          role: "user",
-          content: `Original query: "${query}"\n\nRepos:\n${repoSummary}\n\nRank up to 12 by relevance.`,
-        },
-      ],
-    });
-
-    const block = rankResp.content.find((b) => b.type === "text");
-    const text = block && "text" in block ? block.text : "{}";
+    const text = await callGrok(
+      RANK_SYSTEM,
+      `Original query: "${query}"\n\nRepos:\n${repoSummary}\n\nRank up to 12 by relevance.`,
+      1500
+    );
     const rankData = JSON.parse(extractJson(text)) as {
       ranked?: Array<{ i: number; why: string }>;
     };
